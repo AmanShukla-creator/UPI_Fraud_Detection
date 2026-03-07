@@ -1,6 +1,10 @@
 "use client";
+import { useEffect, useState } from "react";
 
+import { Card, CardTitle } from "@/components/ui/card";
 import {
+  Bar,
+  BarChart,
   CartesianGrid,
   Cell,
   Line,
@@ -11,15 +15,35 @@ import {
   Tooltip,
   XAxis,
   YAxis,
-  BarChart,
-  Bar
 } from "recharts";
-import { Card, CardTitle } from "@/components/ui/card";
-import { heatmapHours, riskPieData, trendData } from "@/lib/mock-data";
 
 const pieColors = ["#22c55e", "#f59e0b", "#ef4444"];
 
 export function DashboardCharts() {
+  const [trendData, setTrendData] = useState<any[]>([]);
+  const [riskPieData, setRiskPieData] = useState<any[]>([]);
+  const [heatmapHours, setHeatmapHours] = useState<any[]>([]);
+
+  useEffect(() => {
+    async function fetchAnalytics() {
+      try {
+        const res = await fetch("http://127.0.0.1:8000/analytics");
+        const data = await res.json();
+
+        setTrendData(data.trend || []);
+        setRiskPieData([
+          { name: "safe", value: data.risk_distribution.safe },
+          { name: "suspicious", value: data.risk_distribution.suspicious },
+          { name: "fraud", value: data.risk_distribution.fraud },
+        ]);
+        setHeatmapHours(data.heatmap || []);
+      } catch (err) {
+        console.error("Analytics fetch failed", err);
+      }
+    }
+
+    fetchAnalytics();
+  }, []);
   return (
     <section id="analytics" className="grid gap-6 xl:grid-cols-3">
       <Card className="xl:col-span-2">
@@ -27,11 +51,20 @@ export function DashboardCharts() {
         <div className="h-72">
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={trendData}>
-              <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+              <CartesianGrid
+                strokeDasharray="3 3"
+                stroke="hsl(var(--border))"
+              />
               <XAxis dataKey="day" stroke="hsl(var(--muted-foreground))" />
               <YAxis stroke="hsl(var(--muted-foreground))" />
               <Tooltip />
-              <Line type="monotone" dataKey="fraud" stroke="#ef4444" strokeWidth={2.4} dot={{ r: 3 }} />
+              <Line
+                type="monotone"
+                dataKey="fraud"
+                stroke="#ef4444"
+                strokeWidth={2.4}
+                dot={{ r: 3 }}
+              />
             </LineChart>
           </ResponsiveContainer>
         </div>
@@ -41,9 +74,18 @@ export function DashboardCharts() {
         <div className="h-72">
           <ResponsiveContainer width="100%" height="100%">
             <PieChart>
-              <Pie data={riskPieData} dataKey="value" nameKey="name" innerRadius={58} outerRadius={96}>
-                {riskPieData.map((entry, index) => (
-                  <Cell key={entry.name} fill={pieColors[index % pieColors.length]} />
+              <Pie
+                data={riskPieData}
+                dataKey="value"
+                nameKey="name"
+                innerRadius={58}
+                outerRadius={96}
+              >
+                {riskPieData.map((entry: any, index: number) => (
+                  <Cell
+                    key={entry.name}
+                    fill={pieColors[index % pieColors.length]}
+                  />
                 ))}
               </Pie>
               <Tooltip />
@@ -56,7 +98,10 @@ export function DashboardCharts() {
         <div className="h-72">
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={heatmapHours}>
-              <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+              <CartesianGrid
+                strokeDasharray="3 3"
+                stroke="hsl(var(--border))"
+              />
               <XAxis dataKey="hour" stroke="hsl(var(--muted-foreground))" />
               <YAxis stroke="hsl(var(--muted-foreground))" />
               <Tooltip />

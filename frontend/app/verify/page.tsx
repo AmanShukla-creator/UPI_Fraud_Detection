@@ -1,16 +1,32 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { motion } from "framer-motion";
-import { AlertTriangle, CheckCircle2, QrCode, ShieldAlert, Upload, Video } from "lucide-react";
-import { toast } from "sonner";
 import { SiteHeader } from "@/components/site-header";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardDescription, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { getMockVerification, type VerificationResult } from "@/lib/mock-data";
 import { VerifySkeleton } from "@/components/verify-skeleton";
+import { motion } from "framer-motion";
+import {
+  AlertTriangle,
+  CheckCircle2,
+  QrCode,
+  ShieldAlert,
+  Upload,
+  Video,
+} from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
+
+type VerificationResult = {
+  level: "safe" | "suspicious" | "fraud";
+  score: number;
+  label: string;
+  communityTrust: "High" | "Moderate" | "Low";
+  reports: number;
+  commonScamType?: string | null;
+  highlights: string[];
+};
 
 export default function VerifyPage() {
   const [mode, setMode] = useState<"upi" | "qr">("upi");
@@ -25,12 +41,19 @@ export default function VerifyPage() {
 
   const icon = useMemo(() => {
     if (!result) return null;
-    if (result.level === "safe") return <CheckCircle2 className="h-6 w-6 text-success" />;
-    if (result.level === "suspicious") return <AlertTriangle className="h-6 w-6 text-warning" />;
+    if (result.level === "safe")
+      return <CheckCircle2 className="h-6 w-6 text-success" />;
+    if (result.level === "suspicious")
+      return <AlertTriangle className="h-6 w-6 text-warning" />;
     return <ShieldAlert className="h-6 w-6 text-danger" />;
   }, [result]);
 
-  const badgeVariant = result?.level === "safe" ? "success" : result?.level === "suspicious" ? "warning" : "danger";
+  const badgeVariant =
+    result?.level === "safe"
+      ? "success"
+      : result?.level === "suspicious"
+        ? "warning"
+        : "danger";
 
   const extractUpiIdFromQr = (raw: string) => {
     try {
@@ -43,18 +66,80 @@ export default function VerifyPage() {
     }
   };
 
-  const runVerification = (targetUpiId: string) => {
+  const runVerification = async (targetUpiId: string) => {
     if (!targetUpiId.trim()) {
       toast.error("Please enter a UPI ID.");
       return;
     }
 
-    setLoading(true);
-    setResult(null);
-    window.setTimeout(() => {
-      setLoading(false);
-      setResult(getMockVerification(targetUpiId));
-    }, 1500);
+    try {
+      setLoading(true);
+      setResult(null);
+
+      // 1️⃣ Run fraud detection
+      const verifyRes = await fetch(
+        "http://127.0.0.1:8000/api/verify-transaction",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            upi_id: targetUpiId,
+            step: 1,
+            transaction_type: 1,
+            amount: 5000,
+            oldbalanceOrg: 6000,
+            newbalanceOrig: 1000,
+            oldbalanceDest: 2000,
+            newbalanceDest: 7000,
+            device_id: "device123",
+            location: "Delhi",
+          }),
+        },
+      );
+
+      const verifyData = await verifyRes.json();
+
+      // 2️⃣ Fetch reputation data
+      const riskRes = await fetch(
+        `http://127.0.0.1:8000/upi/${targetUpiId}/risk`,
+      );
+      const riskData = await riskRes.json();
+
+      // 3️⃣ Update UI
+      setResult({
+        level: verifyData.risk_level,
+        score: verifyData.score,
+        label:
+          verifyData.risk_level === "safe"
+            ? "Low Risk"
+            : verifyData.risk_level === "suspicious"
+              ? "Medium Risk"
+              : "High Risk",
+
+        communityTrust:
+          riskData.community_trust > 70
+            ? "High"
+            : riskData.community_trust > 40
+              ? "Moderate"
+              : "Low",
+
+        reports: riskData.reports_count,
+        commonScamType: riskData.common_scam_type,
+
+        highlights: [
+          "Transaction anomaly detected",
+          "Community fraud reports found",
+          "Risk pattern matched",
+        ],
+      });
+    } catch (err) {
+      console.error(err);
+      toast.error("Verification failed.");
+    }
+
+    setLoading(false);
   };
 
   const onAnalyze = () => runVerification(upiId);
@@ -80,7 +165,7 @@ export default function VerifyPage() {
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: "environment" } }
+        video: { facingMode: { ideal: "environment" } },
       });
       streamRef.current = stream;
       setScanning(true);
@@ -161,15 +246,23 @@ export default function VerifyPage() {
           className="mb-8 text-center"
         >
           <h1 className="text-4xl font-semibold">UPI Safety Verification</h1>
-          <p className="mt-2 text-muted-foreground">Verify by UPI ID or QR and evaluate risk in real-time.</p>
+          <p className="mt-2 text-muted-foreground">
+            Verify by UPI ID or QR and evaluate risk in real-time.
+          </p>
         </motion.div>
 
         <Card className="mx-auto mb-8 max-w-2xl">
           <div className="mb-4 flex gap-2">
-            <Button variant={mode === "upi" ? "default" : "outline"} onClick={() => setMode("upi")}>
+            <Button
+              variant={mode === "upi" ? "default" : "outline"}
+              onClick={() => setMode("upi")}
+            >
               Verify UPI
             </Button>
-            <Button variant={mode === "qr" ? "default" : "outline"} onClick={() => setMode("qr")}>
+            <Button
+              variant={mode === "qr" ? "default" : "outline"}
+              onClick={() => setMode("qr")}
+            >
               <QrCode className="mr-2 h-4 w-4" />
               Verify QR
             </Button>
@@ -195,7 +288,12 @@ export default function VerifyPage() {
           ) : (
             <div className="space-y-3">
               <div className="flex flex-col gap-3 sm:flex-row">
-                <Button size="lg" variant="outline" className="h-14 flex-1" onClick={onScanQr}>
+                <Button
+                  size="lg"
+                  variant="outline"
+                  className="h-14 flex-1"
+                  onClick={onScanQr}
+                >
                   <Video className="mr-2 h-4 w-4" />
                   Scan QR
                 </Button>
@@ -221,7 +319,13 @@ export default function VerifyPage() {
               />
               {scanning && (
                 <div className="rounded-xl border border-border/70 bg-muted/20 p-3">
-                  <video ref={videoRef} className="h-56 w-full rounded-lg object-cover" autoPlay muted playsInline />
+                  <video
+                    ref={videoRef}
+                    className="h-56 w-full rounded-lg object-cover"
+                    autoPlay
+                    muted
+                    playsInline
+                  />
                   <div className="mt-2 flex justify-end">
                     <Button variant="outline" size="sm" onClick={stopScan}>
                       Stop scan
@@ -240,8 +344,13 @@ export default function VerifyPage() {
         {loading && <VerifySkeleton />}
 
         {!loading && result && (
-          <motion.div initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }}>
-            <Card className={result.level === "fraud" ? "border-danger/40" : ""}>
+          <motion.div
+            initial={{ opacity: 0, y: 14 }}
+            animate={{ opacity: 1, y: 0 }}
+          >
+            <Card
+              className={result.level === "fraud" ? "border-danger/40" : ""}
+            >
               <div className="flex flex-wrap items-center gap-3">
                 {icon}
                 <CardTitle>{result.label}</CardTitle>
@@ -250,7 +359,9 @@ export default function VerifyPage() {
               <div className="mt-4 grid gap-3 sm:grid-cols-2">
                 <Card className="bg-muted/40 p-4">
                   <CardDescription>Community Trust</CardDescription>
-                  <p className="mt-1 text-lg font-semibold">{result.communityTrust}</p>
+                  <p className="mt-1 text-lg font-semibold">
+                    {result.communityTrust}
+                  </p>
                 </Card>
                 <Card className="bg-muted/40 p-4">
                   <CardDescription>Reports</CardDescription>
@@ -265,10 +376,15 @@ export default function VerifyPage() {
               )}
 
               <div className="mt-6">
-                <CardDescription className="mb-2">Risk Breakdown</CardDescription>
+                <CardDescription className="mb-2">
+                  Risk Breakdown
+                </CardDescription>
                 <ul className="space-y-2">
                   {result.highlights.map((item) => (
-                    <li key={item} className="rounded-xl border border-border/70 bg-muted/30 px-3 py-2 text-sm">
+                    <li
+                      key={item}
+                      className="rounded-xl border border-border/70 bg-muted/30 px-3 py-2 text-sm"
+                    >
                       {item}
                     </li>
                   ))}
@@ -278,7 +394,9 @@ export default function VerifyPage() {
               <Button
                 variant={result.level === "fraud" ? "danger" : "outline"}
                 className="mt-6"
-                onClick={() => toast.success("UPI ID flagged for community review.")}
+                onClick={() =>
+                  toast.success("UPI ID flagged for community review.")
+                }
               >
                 Flag this UPI ID
               </Button>

@@ -49,7 +49,7 @@ def predict_fraud(data):
     # RISK LEVEL
     # -----------------
 
-    if score >= 80:
+    if score >= 60:
         risk_level = "fraud"
     elif score >= 40:
         risk_level = "suspicious"

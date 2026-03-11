@@ -1,4 +1,4 @@
-import pickle
+import joblib
 import numpy as np
 import os
 
@@ -9,12 +9,12 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(BASE_DIR, "..", "ml", "fraud_model.pkl")
 
 # Load trained model
-with open(MODEL_PATH, "rb") as f:
-    model = pickle.load(f)
+model = joblib.load(MODEL_PATH)
 
 
 def predict_transaction(data):
     data = np.array(data).reshape(1, -1)
+
     prediction = model.predict(data)[0]
     probability = model.predict_proba(data)[0][1]
 
@@ -25,5 +25,5 @@ def predict_transaction(data):
 
 
 if __name__ == "__main__":
-    sample = [0]*30
+    sample = [0] * 30
     print(predict_transaction(sample))

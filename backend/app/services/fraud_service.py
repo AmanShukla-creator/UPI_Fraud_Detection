@@ -1,4 +1,4 @@
-import pickle
+import joblib
 import numpy as np
 from pathlib import Path
 
@@ -7,8 +7,7 @@ from app.database.models import Transaction
 
 MODEL_PATH = Path(__file__).resolve().parents[2] / "models" / "fraud_model_v1.pkl"
 
-with open(MODEL_PATH, "rb") as f:
-    model = pickle.load(f)
+model = joblib.load(MODEL_PATH)
 
 
 def predict_fraud(data):
@@ -25,15 +24,10 @@ def predict_fraud(data):
 
     features = np.array(features).reshape(1, -1)
 
-    # ML prediction
     probability = float(model.predict_proba(features)[0][1])
-
     score = probability * 100
 
-    # -----------------
-    # RULE ENGINE
-    # -----------------
-
+    # Rule engine
     if data["amount"] > 20000:
         score += 20
 
@@ -45,10 +39,7 @@ def predict_fraud(data):
 
     score = min(score, 100)
 
-    # -----------------
-    # RISK LEVEL
-    # -----------------
-
+    # Risk level
     if score >= 60:
         risk_level = "fraud"
     elif score >= 40:
@@ -58,24 +49,24 @@ def predict_fraud(data):
 
     risk_score = int(score)
 
-    # Save transaction
     db = SessionLocal()
 
-    transaction = Transaction(
-        upi_id=data["upi_id"],
-        amount=data["amount"],
-        device_id=data["device_id"],
-        location=data["location"],
-        transaction_type=str(data["transaction_type"]),
-        prediction=risk_level,
-        risk_score=risk_score
-    )
+    try:
+        transaction = Transaction(
+            upi_id=data["upi_id"],
+            amount=data["amount"],
+            device_id=data["device_id"],
+            location=data["location"],
+            transaction_type=str(data["transaction_type"]),
+            prediction=risk_level,
+            risk_score=risk_score
+        )
 
-    db.add(transaction)
-    db.commit()
-    db.close()
-    
-    print("Calculated score:", score)
+        db.add(transaction)
+        db.commit()
+
+    finally:
+        db.close()
 
     return {
         "upi_id": data["upi_id"],

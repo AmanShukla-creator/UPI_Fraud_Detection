@@ -3,6 +3,7 @@
 import { DashboardCharts } from "@/components/dashboard-charts";
 import { RecentActivity } from "@/components/recent-activity";
 import { StatCard } from "@/components/stat-card";
+import { buildApiUrl } from "@/lib/api";
 import { useEffect, useState } from "react";
 
 export function DashboardOverview() {
@@ -11,7 +12,7 @@ export function DashboardOverview() {
   useEffect(() => {
     async function fetchStats() {
       try {
-        const res = await fetch("http://127.0.0.1:8000/dashboard/stats");
+        const res = await fetch(buildApiUrl("/dashboard/stats"));
         const data = await res.json();
         setStats(data);
       } catch (error) {

@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 
 import { Card, CardTitle } from "@/components/ui/card";
+import { buildApiUrl } from "@/lib/api";
 import {
   Bar,
   BarChart,
@@ -27,7 +28,7 @@ export function DashboardCharts() {
   useEffect(() => {
     async function fetchAnalytics() {
       try {
-        const res = await fetch("http://127.0.0.1:8000/analytics");
+        const res = await fetch(buildApiUrl("/analytics"));
         const data = await res.json();
 
         setTrendData(data.trend || []);

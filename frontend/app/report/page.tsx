@@ -6,6 +6,7 @@ import { Card, CardDescription, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { buildApiUrl } from "@/lib/api";
 import { type FormEvent, useState } from "react";
 import { toast } from "sonner";
 
@@ -31,20 +32,29 @@ export default function ReportPage() {
     }
 
     try {
-      const res = await fetch("http://127.0.0.1:8000/report", {
+      const res = await fetch(buildApiUrl("/report"), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          upi_id: upiId,
+          upi_id: upiId.trim(),
           scam_type: scamType,
-          description: description,
+          description: description.trim(),
           screenshot: null,
         }),
       });
 
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        const message =
+          typeof data?.detail === "string"
+            ? data.detail
+            : "Failed to submit report.";
+        toast.error(message);
+        return;
+      }
 
       console.log(data);
 

@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardDescription, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { VerifySkeleton } from "@/components/verify-skeleton";
+import { buildApiUrl } from "@/lib/api";
 import { motion } from "framer-motion";
 import {
   AlertTriangle,
@@ -28,6 +29,39 @@ type VerificationResult = {
   highlights: string[];
 };
 
+type VerifyApiResponse = {
+  risk_level: string;
+  score?: number;
+  risk_score?: number;
+};
+
+type UpiRiskApiResponse = {
+  community_trust: number;
+  reports_count: number;
+  common_scam_type?: string | null;
+};
+
+function normalizeRiskLevel(level: string): "safe" | "suspicious" | "fraud" {
+  const normalized = level.trim().toLowerCase();
+  if (
+    normalized === "safe" ||
+    normalized === "suspicious" ||
+    normalized === "fraud"
+  ) {
+    return normalized;
+  }
+  return "fraud";
+}
+
+function pickScore(data: VerifyApiResponse): number {
+  const candidate =
+    typeof data.risk_score === "number" ? data.risk_score : data.score;
+  if (typeof candidate !== "number" || Number.isNaN(candidate)) {
+    return 0;
+  }
+  return Math.round(candidate);
+}
+
 export default function VerifyPage() {
   const [mode, setMode] = useState<"upi" | "qr">("upi");
   const [upiId, setUpiId] = useState("");
@@ -35,17 +69,21 @@ export default function VerifyPage() {
   const [scanning, setScanning] = useState(false);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<VerificationResult | null>(null);
+
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const icon = useMemo(() => {
     if (!result) return null;
+
     if (result.level === "safe")
-      return <CheckCircle2 className="h-6 w-6 text-success" />;
+      return <CheckCircle2 className="h-6 w-6 text-green-500" />;
+
     if (result.level === "suspicious")
-      return <AlertTriangle className="h-6 w-6 text-warning" />;
-    return <ShieldAlert className="h-6 w-6 text-danger" />;
+      return <AlertTriangle className="h-6 w-6 text-yellow-500" />;
+
+    return <ShieldAlert className="h-6 w-6 text-red-500" />;
   }, [result]);
 
   const badgeVariant =
@@ -76,45 +114,55 @@ export default function VerifyPage() {
       setLoading(true);
       setResult(null);
 
-      // 1️⃣ Run fraud detection
-      const verifyRes = await fetch(
-        "http://127.0.0.1:8000/api/verify-transaction",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            upi_id: targetUpiId,
-            step: 1,
-            transaction_type: 1,
-            amount: 5000,
-            oldbalanceOrg: 6000,
-            newbalanceOrig: 1000,
-            oldbalanceDest: 2000,
-            newbalanceDest: 7000,
-            device_id: "device123",
-            location: "Delhi",
-          }),
+      const verifyRes = await fetch(buildApiUrl("/api/verify-transaction"), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
         },
-      );
+        body: JSON.stringify({
+          upi_id: targetUpiId,
+          step: 1,
+          transaction_type: 1,
+          // Keep payload deterministic so frontend and direct backend calls match.
+          amount: 5000,
+          oldbalanceOrg: 6000,
+          newbalanceOrig: 1000,
+          oldbalanceDest: 2000,
+          newbalanceDest: 7000,
+          device_id: "device123",
+          location: "Delhi",
+        }),
+      });
 
-      const verifyData = await verifyRes.json();
+      if (!verifyRes.ok) {
+        throw new Error(`Verify API failed with status ${verifyRes.status}`);
+      }
 
-      // 2️⃣ Fetch reputation data
+      const verifyData: VerifyApiResponse = await verifyRes.json();
+      console.log("Verify API:", verifyData);
+
       const riskRes = await fetch(
-        `http://127.0.0.1:8000/upi/${targetUpiId}/risk`,
+        buildApiUrl(`/upi/${encodeURIComponent(targetUpiId)}/risk`),
       );
-      const riskData = await riskRes.json();
 
-      // 3️⃣ Update UI
+      if (!riskRes.ok) {
+        throw new Error(`Risk API failed with status ${riskRes.status}`);
+      }
+
+      const riskData: UpiRiskApiResponse = await riskRes.json();
+      console.log("Risk API:", riskData);
+
+      const mappedLevel = normalizeRiskLevel(verifyData.risk_level);
+      const mappedScore = pickScore(verifyData);
+
       setResult({
-        level: verifyData.risk_level,
-        score: verifyData.score,
+        level: mappedLevel,
+        score: mappedScore,
+
         label:
-          verifyData.risk_level === "safe"
+          mappedLevel === "safe"
             ? "Low Risk"
-            : verifyData.risk_level === "suspicious"
+            : mappedLevel === "suspicious"
               ? "Medium Risk"
               : "High Risk",
 
@@ -129,9 +177,11 @@ export default function VerifyPage() {
         commonScamType: riskData.common_scam_type,
 
         highlights: [
-          "Transaction anomaly detected",
-          "Community fraud reports found",
-          "Risk pattern matched",
+          `Fraud probability score: ${mappedScore}%`,
+          `Community reports detected: ${riskData.reports_count}`,
+          riskData.common_scam_type
+            ? `Common scam pattern: ${riskData.common_scam_type}`
+            : "No scam pattern detected",
         ],
       });
     } catch (err) {
@@ -158,8 +208,9 @@ export default function VerifyPage() {
 
   const onScanQr = async () => {
     const BarcodeDetectorCtor = (window as any).BarcodeDetector;
+
     if (!BarcodeDetectorCtor) {
-      toast.error("QR scanning not supported in this browser. Use Upload QR.");
+      toast.error("QR scanning not supported in this browser.");
       return;
     }
 
@@ -167,89 +218,105 @@ export default function VerifyPage() {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: { ideal: "environment" } },
       });
+
       streamRef.current = stream;
       setScanning(true);
+
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
       }
 
       const detector = new BarcodeDetectorCtor({ formats: ["qr_code"] });
+
       const interval = window.setInterval(async () => {
         if (!videoRef.current) return;
-        try {
-          const codes = await detector.detect(videoRef.current);
-          if (codes.length > 0) {
-            const value = String(codes[0].rawValue ?? "");
-            setQrPayload(value);
-            const extractedUpi = extractUpiIdFromQr(value);
-            setUpiId(extractedUpi);
-            toast.success("QR detected successfully.");
-            window.clearInterval(interval);
-            stopScan();
-          }
-        } catch {
+
+        const codes = await detector.detect(videoRef.current);
+
+        if (codes.length > 0) {
+          const value = String(codes[0].rawValue ?? "");
+
+          setQrPayload(value);
+
+          const extractedUpi = extractUpiIdFromQr(value);
+          setUpiId(extractedUpi);
+
+          toast.success("QR detected successfully.");
+
           window.clearInterval(interval);
           stopScan();
-          toast.error("Unable to scan QR right now.");
         }
       }, 500);
     } catch {
-      toast.error("Camera permission denied or unavailable.");
+      toast.error("Camera permission denied.");
       stopScan();
     }
   };
 
   const onUploadQr = async (file: File | null) => {
     if (!file) return;
+
     const BarcodeDetectorCtor = (window as any).BarcodeDetector;
+
     if (!BarcodeDetectorCtor) {
-      toast.error("QR decoding not supported in this browser.");
+      toast.error("QR decoding not supported.");
       return;
     }
 
     try {
       const bitmap = await createImageBitmap(file);
       const detector = new BarcodeDetectorCtor({ formats: ["qr_code"] });
+
       const codes = await detector.detect(bitmap);
+
       if (!codes.length) {
-        toast.error("No QR code found in uploaded image.");
+        toast.error("No QR code found.");
         return;
       }
+
       const value = String(codes[0].rawValue ?? "");
+
       setQrPayload(value);
+
       const extractedUpi = extractUpiIdFromQr(value);
       setUpiId(extractedUpi);
-      toast.success("QR uploaded and parsed.");
+
+      toast.success("QR uploaded successfully.");
     } catch {
-      toast.error("Failed to process uploaded QR.");
+      toast.error("Failed to process QR.");
     }
   };
 
   const onVerifyQr = () => {
     const target = upiId.trim() || extractUpiIdFromQr(qrPayload);
+
     if (!target.trim()) {
       toast.error("Scan or upload a QR first.");
       return;
     }
+
     runVerification(target);
   };
 
   return (
     <main>
       <SiteHeader />
+
       <div className="mx-auto w-full max-w-4xl px-4 py-14">
         <motion.div
           initial={{ opacity: 0, y: 18 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.35 }}
           className="mb-8 text-center"
         >
           <h1 className="text-4xl font-semibold">UPI Safety Verification</h1>
+
           <p className="mt-2 text-muted-foreground">
-            Verify by UPI ID or QR and evaluate risk in real-time.
+            Verify UPI ID or QR and detect fraud risk in real time.
           </p>
         </motion.div>
+
+        {/* INPUT CARD */}
 
         <Card className="mx-auto mb-8 max-w-2xl">
           <div className="mb-4 flex gap-2">
@@ -259,6 +326,7 @@ export default function VerifyPage() {
             >
               Verify UPI
             </Button>
+
             <Button
               variant={mode === "qr" ? "default" : "outline"}
               onClick={() => setMode("qr")}
@@ -269,47 +337,44 @@ export default function VerifyPage() {
           </div>
 
           {mode === "upi" ? (
-            <>
-              <div className="flex flex-col gap-3 sm:flex-row">
-                <Input
-                  placeholder="Enter UPI ID (e.g. trusted@upi)"
-                  value={upiId}
-                  onChange={(e) => setUpiId(e.target.value)}
-                  className="h-14 text-base"
-                />
-                <Button size="lg" className="h-14 sm:w-36" onClick={onAnalyze}>
-                  Analyze
-                </Button>
-              </div>
-              <CardDescription className="mt-3">
-                Try `trusted@upi`, `cashback@upi`, or `refundhelp@upi`.
-              </CardDescription>
-            </>
+            <div className="flex gap-3">
+              <Input
+                placeholder="Enter UPI ID"
+                value={upiId}
+                onChange={(e) => setUpiId(e.target.value)}
+                className="h-14"
+              />
+
+              <Button size="lg" className="h-14 sm:w-36" onClick={onAnalyze}>
+                Analyze
+              </Button>
+            </div>
           ) : (
             <div className="space-y-3">
-              <div className="flex flex-col gap-3 sm:flex-row">
+              <div className="flex gap-3">
                 <Button
-                  size="lg"
                   variant="outline"
-                  className="h-14 flex-1"
+                  className="flex-1 h-14"
                   onClick={onScanQr}
                 >
                   <Video className="mr-2 h-4 w-4" />
                   Scan QR
                 </Button>
+
                 <Button
-                  size="lg"
                   variant="outline"
-                  className="h-14 flex-1"
+                  className="flex-1 h-14"
                   onClick={() => fileInputRef.current?.click()}
                 >
                   <Upload className="mr-2 h-4 w-4" />
                   Upload QR
                 </Button>
-                <Button size="lg" className="h-14 sm:w-36" onClick={onVerifyQr}>
+
+                <Button className="h-14 sm:w-36" onClick={onVerifyQr}>
                   Verify
                 </Button>
               </div>
+
               <input
                 ref={fileInputRef}
                 type="file"
@@ -317,26 +382,15 @@ export default function VerifyPage() {
                 className="hidden"
                 onChange={(e) => onUploadQr(e.target.files?.[0] ?? null)}
               />
+
               {scanning && (
-                <div className="rounded-xl border border-border/70 bg-muted/20 p-3">
-                  <video
-                    ref={videoRef}
-                    className="h-56 w-full rounded-lg object-cover"
-                    autoPlay
-                    muted
-                    playsInline
-                  />
-                  <div className="mt-2 flex justify-end">
-                    <Button variant="outline" size="sm" onClick={stopScan}>
-                      Stop scan
-                    </Button>
-                  </div>
-                </div>
+                <video
+                  ref={videoRef}
+                  className="h-56 w-full rounded-lg"
+                  autoPlay
+                  muted
+                />
               )}
-              <CardDescription>
-                Scan a QR or upload a QR image, then press Verify.
-                {upiId ? ` Parsed UPI: ${upiId}` : ""}
-              </CardDescription>
             </div>
           )}
         </Card>
@@ -344,34 +398,35 @@ export default function VerifyPage() {
         {loading && <VerifySkeleton />}
 
         {!loading && result && (
-          <motion.div
-            initial={{ opacity: 0, y: 14 }}
-            animate={{ opacity: 1, y: 0 }}
-          >
-            <Card
-              className={result.level === "fraud" ? "border-danger/40" : ""}
-            >
-              <div className="flex flex-wrap items-center gap-3">
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+            <Card>
+              <div className="flex items-center gap-3">
                 {icon}
+
                 <CardTitle>{result.label}</CardTitle>
-                <Badge variant={badgeVariant}>{`${result.score}%`}</Badge>
+
+                <Badge variant={badgeVariant}>{result.score}%</Badge>
               </div>
+
               <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                <Card className="bg-muted/40 p-4">
+                <Card className="p-4">
                   <CardDescription>Community Trust</CardDescription>
-                  <p className="mt-1 text-lg font-semibold">
+
+                  <p className="text-lg font-semibold">
                     {result.communityTrust}
                   </p>
                 </Card>
-                <Card className="bg-muted/40 p-4">
+
+                <Card className="p-4">
                   <CardDescription>Reports</CardDescription>
-                  <p className="mt-1 text-lg font-semibold">{result.reports}</p>
+
+                  <p className="text-lg font-semibold">{result.reports}</p>
                 </Card>
               </div>
 
               {result.commonScamType && (
-                <p className="mt-4 rounded-xl border border-danger/40 bg-danger/10 px-4 py-3 text-sm text-danger">
-                  Common Scam Type: {result.commonScamType}
+                <p className="mt-4 text-sm text-red-500">
+                  Common Scam: {result.commonScamType}
                 </p>
               )}
 
@@ -379,27 +434,15 @@ export default function VerifyPage() {
                 <CardDescription className="mb-2">
                   Risk Breakdown
                 </CardDescription>
+
                 <ul className="space-y-2">
                   {result.highlights.map((item) => (
-                    <li
-                      key={item}
-                      className="rounded-xl border border-border/70 bg-muted/30 px-3 py-2 text-sm"
-                    >
+                    <li key={item} className="text-sm">
                       {item}
                     </li>
                   ))}
                 </ul>
               </div>
-
-              <Button
-                variant={result.level === "fraud" ? "danger" : "outline"}
-                className="mt-6"
-                onClick={() =>
-                  toast.success("UPI ID flagged for community review.")
-                }
-              >
-                Flag this UPI ID
-              </Button>
             </Card>
           </motion.div>
         )}

@@ -2,6 +2,7 @@
 
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
+import { buildApiUrl } from "@/lib/api";
 import { Bell, LogOut, Settings2 } from "lucide-react";
 import { signOut } from "next-auth/react";
 import { useEffect, useState } from "react";
@@ -17,7 +18,7 @@ export function DashboardTopbar({ onOpenSettings }: Props) {
   useEffect(() => {
     async function fetchAlerts() {
       try {
-        const res = await fetch("http://127.0.0.1:8000/fraud-alerts");
+        const res = await fetch(buildApiUrl("/fraud-alerts"));
         const data = await res.json();
         setAlerts(data);
       } catch (err) {

@@ -112,12 +112,14 @@ def get_dashboard_stats():
     try:
         total = db.query(Transaction).count()
         fraud = db.query(Transaction).filter(Transaction.prediction == "fraud").count()
+        reports = db.query(Report).count()
         fraud_rate = (fraud / total * 100) if total > 0 else 0
 
         return {
             "total_verifications": total,
             "fraud_detected": fraud,
             "fraud_rate": round(fraud_rate, 2),
+            "community_reports": reports,
         }
     finally:
         db.close()

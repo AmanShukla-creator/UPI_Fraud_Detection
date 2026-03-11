@@ -1,5 +1,6 @@
 "use client";
 
+import { buildApiUrl } from "@/lib/api";
 import { useEffect, useState } from "react";
 
 export function RecentActivity() {
@@ -8,7 +9,7 @@ export function RecentActivity() {
   useEffect(() => {
     async function fetchActivities() {
       try {
-        const res = await fetch("http://127.0.0.1:8000/verifications");
+        const res = await fetch(buildApiUrl("/verifications"));
         const data = await res.json();
         setActivities(data);
       } catch (error) {

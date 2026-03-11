@@ -1,15 +1,65 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { motion } from "framer-motion";
-import { AlertTriangle, CheckCircle2, QrCode, ShieldAlert, Upload, Video } from "lucide-react";
-import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardDescription, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { getMockVerification, type VerificationResult } from "@/lib/mock-data";
 import { VerifySkeleton } from "@/components/verify-skeleton";
+import { buildApiUrl } from "@/lib/api";
+import { motion } from "framer-motion";
+import {
+  AlertTriangle,
+  CheckCircle2,
+  QrCode,
+  ShieldAlert,
+  Upload,
+  Video,
+} from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
+
+type VerificationResult = {
+  level: "safe" | "suspicious" | "fraud";
+  score: number;
+  label: string;
+  communityTrust: "High" | "Moderate" | "Low";
+  reports: number;
+  commonScamType?: string | null;
+  highlights: string[];
+};
+
+type VerifyApiResponse = {
+  risk_level: string;
+  score?: number;
+  risk_score?: number;
+};
+
+type UpiRiskApiResponse = {
+  community_trust: number;
+  reports_count: number;
+  common_scam_type?: string | null;
+};
+
+function normalizeRiskLevel(level: string): "safe" | "suspicious" | "fraud" {
+  const normalized = level.trim().toLowerCase();
+  if (
+    normalized === "safe" ||
+    normalized === "suspicious" ||
+    normalized === "fraud"
+  ) {
+    return normalized;
+  }
+  return "fraud";
+}
+
+function pickScore(data: VerifyApiResponse): number {
+  const candidate =
+    typeof data.risk_score === "number" ? data.risk_score : data.score;
+  if (typeof candidate !== "number" || Number.isNaN(candidate)) {
+    return 0;
+  }
+  return Math.round(candidate);
+}
 
 export default function DashboardVerifyPage() {
   const [mode, setMode] = useState<"upi" | "qr">("upi");
@@ -24,12 +74,19 @@ export default function DashboardVerifyPage() {
 
   const icon = useMemo(() => {
     if (!result) return null;
-    if (result.level === "safe") return <CheckCircle2 className="h-6 w-6 text-success" />;
-    if (result.level === "suspicious") return <AlertTriangle className="h-6 w-6 text-warning" />;
+    if (result.level === "safe")
+      return <CheckCircle2 className="h-6 w-6 text-success" />;
+    if (result.level === "suspicious")
+      return <AlertTriangle className="h-6 w-6 text-warning" />;
     return <ShieldAlert className="h-6 w-6 text-danger" />;
   }, [result]);
 
-  const badgeVariant = result?.level === "safe" ? "success" : result?.level === "suspicious" ? "warning" : "danger";
+  const badgeVariant =
+    result?.level === "safe"
+      ? "success"
+      : result?.level === "suspicious"
+        ? "warning"
+        : "danger";
 
   const extractUpiIdFromQr = (raw: string) => {
     try {
@@ -41,17 +98,86 @@ export default function DashboardVerifyPage() {
     }
   };
 
-  const runVerification = (targetUpiId: string) => {
+  const runVerification = async (targetUpiId: string) => {
     if (!targetUpiId.trim()) {
       toast.error("Please enter a UPI ID.");
       return;
     }
-    setLoading(true);
-    setResult(null);
-    window.setTimeout(() => {
-      setLoading(false);
-      setResult(getMockVerification(targetUpiId));
-    }, 1500);
+
+    try {
+      setLoading(true);
+      setResult(null);
+
+      const verifyRes = await fetch(buildApiUrl("/api/verify-transaction"), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          upi_id: targetUpiId,
+          step: 1,
+          transaction_type: 1,
+          // Keep payload deterministic so frontend and direct backend calls match.
+          amount: 5000,
+          oldbalanceOrg: 6000,
+          newbalanceOrig: 1000,
+          oldbalanceDest: 2000,
+          newbalanceDest: 7000,
+          device_id: "device123",
+          location: "Delhi",
+        }),
+      });
+
+      if (!verifyRes.ok) {
+        throw new Error(`Verify API failed with status ${verifyRes.status}`);
+      }
+
+      const verifyData: VerifyApiResponse = await verifyRes.json();
+
+      const riskRes = await fetch(
+        buildApiUrl(`/upi/${encodeURIComponent(targetUpiId)}/risk`),
+      );
+
+      if (!riskRes.ok) {
+        throw new Error(`Risk API failed with status ${riskRes.status}`);
+      }
+
+      const riskData: UpiRiskApiResponse = await riskRes.json();
+
+      const mappedLevel = normalizeRiskLevel(verifyData.risk_level);
+      const mappedScore = pickScore(verifyData);
+
+      setResult({
+        level: mappedLevel,
+        score: mappedScore,
+        label:
+          mappedLevel === "safe"
+            ? "Low Risk"
+            : mappedLevel === "suspicious"
+              ? "Medium Risk"
+              : "High Risk",
+        communityTrust:
+          riskData.community_trust > 70
+            ? "High"
+            : riskData.community_trust > 40
+              ? "Moderate"
+              : "Low",
+        reports: riskData.reports_count,
+        commonScamType: riskData.common_scam_type,
+        highlights: [
+          `Fraud probability score: ${mappedScore}%`,
+          `Community reports detected: ${riskData.reports_count}`,
+          riskData.common_scam_type
+            ? `Common scam pattern: ${riskData.common_scam_type}`
+            : "No scam pattern detected",
+        ],
+      });
+    } catch (err) {
+      console.error(err);
+      toast.error("Verification failed.");
+    }
+
+    setLoading(false);
   };
 
   const stopScan = () => {
@@ -73,7 +199,9 @@ export default function DashboardVerifyPage() {
       return;
     }
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" } } });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: "environment" } },
+      });
       streamRef.current = stream;
       setScanning(true);
       if (videoRef.current) {
@@ -126,17 +254,29 @@ export default function DashboardVerifyPage() {
 
   return (
     <div className="space-y-6">
-      <motion.div initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} className="space-y-2">
+      <motion.div
+        initial={{ opacity: 0, y: 14 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="space-y-2"
+      >
         <h2 className="text-3xl font-semibold">Verify UPI / QR</h2>
-        <p className="text-muted-foreground">Run risk analysis before payment.</p>
+        <p className="text-muted-foreground">
+          Run risk analysis before payment.
+        </p>
       </motion.div>
 
       <Card className="max-w-4xl">
         <div className="mb-4 flex gap-2">
-          <Button variant={mode === "upi" ? "default" : "outline"} onClick={() => setMode("upi")}>
+          <Button
+            variant={mode === "upi" ? "default" : "outline"}
+            onClick={() => setMode("upi")}
+          >
             Verify UPI
           </Button>
-          <Button variant={mode === "qr" ? "default" : "outline"} onClick={() => setMode("qr")}>
+          <Button
+            variant={mode === "qr" ? "default" : "outline"}
+            onClick={() => setMode("qr")}
+          >
             <QrCode className="mr-2 h-4 w-4" />
             Verify QR
           </Button>
@@ -149,22 +289,42 @@ export default function DashboardVerifyPage() {
               onChange={(e) => setUpiId(e.target.value)}
               className="h-14 text-base"
             />
-            <Button size="lg" className="h-14 sm:w-36" onClick={() => runVerification(upiId)}>
+            <Button
+              size="lg"
+              className="h-14 sm:w-36"
+              onClick={() => runVerification(upiId)}
+            >
               Analyze
             </Button>
           </div>
         ) : (
           <div className="space-y-3">
             <div className="flex flex-col gap-3 sm:flex-row">
-              <Button size="lg" variant="outline" className="h-14 flex-1" onClick={onScanQr}>
+              <Button
+                size="lg"
+                variant="outline"
+                className="h-14 flex-1"
+                onClick={onScanQr}
+              >
                 <Video className="mr-2 h-4 w-4" />
                 Scan QR
               </Button>
-              <Button size="lg" variant="outline" className="h-14 flex-1" onClick={() => fileInputRef.current?.click()}>
+              <Button
+                size="lg"
+                variant="outline"
+                className="h-14 flex-1"
+                onClick={() => fileInputRef.current?.click()}
+              >
                 <Upload className="mr-2 h-4 w-4" />
                 Upload QR
               </Button>
-              <Button size="lg" className="h-14 sm:w-36" onClick={() => runVerification(upiId || extractUpiIdFromQr(qrPayload))}>
+              <Button
+                size="lg"
+                className="h-14 sm:w-36"
+                onClick={() =>
+                  runVerification(upiId || extractUpiIdFromQr(qrPayload))
+                }
+              >
                 Verify
               </Button>
             </div>
@@ -175,7 +335,15 @@ export default function DashboardVerifyPage() {
               className="hidden"
               onChange={(e) => onUploadQr(e.target.files?.[0] ?? null)}
             />
-            {scanning && <video ref={videoRef} className="h-56 w-full rounded-lg object-cover" autoPlay muted playsInline />}
+            {scanning && (
+              <video
+                ref={videoRef}
+                className="h-56 w-full rounded-lg object-cover"
+                autoPlay
+                muted
+                playsInline
+              />
+            )}
           </div>
         )}
       </Card>
@@ -192,12 +360,32 @@ export default function DashboardVerifyPage() {
           <div className="mt-4 grid gap-3 sm:grid-cols-2">
             <Card className="bg-muted/40 p-4">
               <CardDescription>Community Trust</CardDescription>
-              <p className="mt-1 text-lg font-semibold">{result.communityTrust}</p>
+              <p className="mt-1 text-lg font-semibold">
+                {result.communityTrust}
+              </p>
             </Card>
             <Card className="bg-muted/40 p-4">
               <CardDescription>Reports</CardDescription>
               <p className="mt-1 text-lg font-semibold">{result.reports}</p>
             </Card>
+          </div>
+
+          {result.commonScamType && (
+            <p className="mt-4 text-sm text-red-500">
+              Common Scam: {result.commonScamType}
+            </p>
+          )}
+
+          <div className="mt-6">
+            <CardDescription className="mb-2">Risk Breakdown</CardDescription>
+
+            <ul className="space-y-2">
+              {result.highlights.map((item) => (
+                <li key={item} className="text-sm">
+                  {item}
+                </li>
+              ))}
+            </ul>
           </div>
         </Card>
       )}
